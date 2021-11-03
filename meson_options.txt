@@ -24,6 +24,12 @@ option('matlabroot',
        value : '/usr/local/MATLAB/latest',
        description : 'Matlab root path (issue `matlabroot` within Matlab to find it)')
 
+option('cilktool',
+       type : 'combo',
+       choices : ['', 'none', 'cilksan', 'cilkscale'],
+       value : 'none',
+       description : 'OpenCilk instrumentation tool')
+
 option('dir_libcilkrts',
        type : 'string',
        value : '/opt/intel/compilers_and_libraries/linux/lib/intel64_lin',

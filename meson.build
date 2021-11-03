@@ -108,6 +108,54 @@ endif
 libs_dep = [fftw_par_dep] + libs_dep # NOTE -lfftw3_<parallel> should precede -lfftw3
 libs_dep_dict += {'fftw3_parallel' : fftw_par_dep}
 
+# ========== OpenCilk instrumentation
+
+cpp_args_cs     = []
+link_args_cs    = []
+str_cs          = ''
+cpp_args_bench  = []
+link_args_bench = []
+str_bench       = ''
+cpp_args_san    = []
+link_args_san   = []
+str_san         = ''
+
+str_warn_not_opencilk = ' tool specified but not using OpenCilk compiler.'
+                        ' Skipping instrumentation.'
+
+if get_option('cilktool') == 'cilkscale' # ----- Cilkscale
+  if not use_opencilk
+    warning('Cilkscale' + str_warn_not_opencilk)
+  else
+    cpp_args_cs     = ['-fcilktool=cilkscale','-DCILKSCALE']
+    link_args_cs    = ['-fcilktool=cilkscale']
+    str_cs          = '_cilkscale'
+    cpp_args_bench  = ['-fcilktool=cilkscale-benchmark','-DCILKSCALE']
+    link_args_bench = ['-fcilktool=cilkscale-benchmark']
+    str_bench       = str_cs + '_bench'
+  endif
+endif
+
+if get_option('cilktool') == 'cilksan' # ----- Cilksan
+  if not use_opencilk
+    warning('Cilksan' + str_warn_not_opencilk)
+  else
+    if not get_option('debug')
+      warning('Instrumenting with Cilksan without debugging symbols.')
+    endif
+    cpp_args_san = ['-fsanitize=cilk','-fno-stripmine',
+                    '-fno-vectorize','-fno-unroll-loops']
+    link_args_san = ['-fsanitize=cilk']
+    # FIXME There does not seem to be a way to add static-only arguments to
+    # build targets defined via `library()`.
+    # See also: https://github.com/mesonbuild/meson/issues/3304
+    if get_option('default_library') != 'static'
+      link_args_san += ['-shared-libasan']
+    endif
+    str_san = '_cilksan'
+  endif
+endif
+
 # ========== build targets
 
 # source files
@@ -115,43 +163,108 @@ subdir('src')
 subdir('csb')
 
 # SG-t-SNE-Pi library
-sgtsnepi_lib = library('sgtsnepi', [sgtsnepi_src],
-                       dependencies : [libs_dep, csb_dep],
-                       include_directories : csb_inc_dir,
-                       install : true, install_dir : 'lib',
-                       soversion : vso)
+sgtsnepi_lib = library(
+  'sgtsnepi' + str_cs + str_san, [sgtsnepi_src],
+  dependencies : [libs_dep, csb_dep],
+  include_directories : csb_inc_dir,
+  cpp_args : cpp_args_cs + cpp_args_san,
+  link_args : link_args_cs + link_args_san,
+  install : true, install_dir : 'lib',
+  soversion : vso)
 
 # conventional t-SNE implementation
-tsnepi_exe = executable('tsnepi', tsnepi_src,
-                        link_with : sgtsnepi_lib,
-                        dependencies : [libs_dep_dict['flann'],
-                                        libs_dep_dict['lz4']],
-                        install : true, install_dir : 'bin',
-                        install_rpath : get_option('prefix') / 'lib')
+tsnepi_exe = executable(
+  'tsnepi' + str_cs + str_san, tsnepi_src,
+  link_with : sgtsnepi_lib,
+  dependencies : [libs_dep_dict['flann'],
+                  libs_dep_dict['lz4']],
+  cpp_args : cpp_args_cs + cpp_args_san,
+  link_args : link_args_cs + link_args_san,
+  install : true, install_dir : 'bin',
+  install_rpath : get_option('prefix') / 'lib')
 
 # demos
 if get_option('enable_demos')
-  demo_stochastic_matrix = executable('demo_stochastic_matrix',
-                                      demo_stochastic_matrix_src,
-                                      link_with : sgtsnepi_lib,
-                                      install : true, install_dir : 'bin',
-                                      install_rpath : get_option('prefix') / 'lib')
-  demo_perplexity_equalization = executable('demo_perplexity_equalization',
-                                            demo_perplexity_equalization_src,
-                                            link_with : sgtsnepi_lib,
-                                            dependencies : [libs_dep_dict['flann'],
-                                                            libs_dep_dict['lz4']],
-                                            install : true, install_dir : 'bin',
-                                            install_rpath : get_option('prefix') / 'lib')
+  demo_stochastic_matrix = executable(
+    'demo_stochastic_matrix' + str_cs + str_san,
+    demo_stochastic_matrix_src,
+    link_with : sgtsnepi_lib,
+    cpp_args : cpp_args_cs + cpp_args_san,
+    link_args : link_args_cs + link_args_san,
+    install : true, install_dir : 'bin',
+    install_rpath : get_option('prefix') / 'lib')
+
+  demo_perplexity_equalization = executable(
+    'demo_perplexity_equalization' + str_cs + str_san,
+    demo_perplexity_equalization_src,
+    link_with : sgtsnepi_lib,
+    dependencies : [libs_dep_dict['flann'],
+                    libs_dep_dict['lz4']],
+    cpp_args : cpp_args_cs + cpp_args_san,
+    link_args : link_args_cs + link_args_san,
+    install : true, install_dir : 'bin',
+    install_rpath : get_option('prefix') / 'lib')
 endif
 
 # test
-test_modules = executable('test_modules', test_modules_src,
-                          link_with : sgtsnepi_lib,
-                          install : true, install_dir : 'bin',
-                          install_rpath : get_option('prefix') / 'lib')
+test_modules = executable(
+  'test_modules' + str_cs + str_san, test_modules_src,
+  link_with : sgtsnepi_lib,
+  cpp_args : cpp_args_cs + cpp_args_san,
+  link_args : link_args_cs + link_args_san,
+  install : true, install_dir : 'bin',
+  install_rpath : get_option('prefix') / 'lib')
+
 test('SG-t-SNE-Pi test modules', test_modules, is_parallel : false)
 
+# ----- Cilkscale benchmark targets
+
+if cpp_args_bench != []
+
+  sgtsnepi_lib_bench = library(
+    'sgtsnepi' + str_bench, [sgtsnepi_src],
+    dependencies : [libs_dep, csb_dep],
+    include_directories : csb_inc_dir,
+    cpp_args : cpp_args_bench,
+    link_args : link_args_bench,
+    install : true, install_dir : 'lib',
+    soversion : vso)
+
+  tsnepi_exe_bench = executable(
+    'tsnepi' + str_bench, tsnepi_src,
+    link_with : sgtsnepi_lib,
+    dependencies : [libs_dep_dict['flann'],
+                    libs_dep_dict['lz4']],
+    cpp_args : cpp_args_bench,
+    link_args : link_args_bench,
+    install : true, install_dir : 'bin',
+    install_rpath : get_option('prefix') / 'lib')
+
+  if get_option('enable_demos')
+
+    demo_stochastic_matrix_bench = executable(
+      'demo_stochastic_matrix' + str_bench,
+      demo_stochastic_matrix_src,
+      link_with : sgtsnepi_lib,
+      cpp_args : cpp_args_bench,
+      link_args : link_args_bench,
+      install : true, install_dir : 'bin',
+      install_rpath : get_option('prefix') / 'lib')
+
+    demo_perplexity_equalization = executable(
+      'demo_perplexity_equalization' + str_bench,
+      demo_perplexity_equalization_src,
+      link_with : sgtsnepi_lib,
+      dependencies : [libs_dep_dict['flann'],
+                      libs_dep_dict['lz4']],
+      cpp_args : cpp_args_bench,
+      link_args : link_args_bench,
+      install : true, install_dir : 'bin',
+      install_rpath : get_option('prefix') / 'lib')
+
+  endif
+
+endif
 
 # ========== Matlab interface
 
